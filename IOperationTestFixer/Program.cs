@@ -146,7 +146,7 @@ namespace IOperationTestFixer
                                                 Microsoft.CodeAnalysis.CSharp.SyntaxKind.StringLiteralExpression,
                                                 Microsoft.CodeAnalysis.CSharp.SyntaxFactory.Literal(
                                                     $@"@""
-{replaceDetails[methodName]}
+{replaceDetails[methodName].Replace("\"", "\"\"")}
 """,
                                                     Environment.NewLine));
 
