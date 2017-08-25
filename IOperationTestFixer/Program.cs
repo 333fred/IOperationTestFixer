@@ -7,7 +7,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace DumperFix
+namespace IOperationTestFixer
 {
     class Program
     {
@@ -18,7 +18,7 @@ namespace DumperFix
         {
             if (args.Length != 2)
             {
-                Console.WriteLine("Usage: DumperFix <Path to failure file> <path to compilers.sln>");
+                Console.WriteLine("Usage: IOperationTestFixer <Path to failure file> <path to compilers.sln>");
                 Console.ReadKey();
                 return 1;
             }
@@ -58,7 +58,6 @@ namespace DumperFix
                 {
                     var replaceText = sb.ToString();
                     replaceText = replaceText.Replace("Actual:", "");
-                    replaceText = replaceText.Replace("\"", "\"\"");
                     replaceText = replaceText.Trim();
                     replaceDetails[MethodName] = replaceText;
                     flag = 0;

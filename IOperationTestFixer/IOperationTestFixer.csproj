@@ -6,8 +6,8 @@
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid>{184D4AD0-6CE4-4940-A96C-40F77808126D}</ProjectGuid>
     <OutputType>Exe</OutputType>
-    <RootNamespace>DumperFix</RootNamespace>
-    <AssemblyName>DumperFix</AssemblyName>
+    <RootNamespace>IOperationTestFixer</RootNamespace>
+    <AssemblyName>IOperationTestFixer</AssemblyName>
     <TargetFrameworkVersion>v4.6.2</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
