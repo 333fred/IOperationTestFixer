@@ -2,6 +2,7 @@
 
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.MSBuild;
+using Microsoft.CodeAnalysis.Text;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -105,7 +106,8 @@ namespace IOperationTestFixer
                 if (fixedRoot != root)
                 {
                     Console.WriteLine($"Committing changes to {doc.FilePath}");
-                    File.WriteAllText(doc.FilePath, fixedRoot.ToFullString());
+                    var encoding = (await doc.GetTextAsync()).Encoding;
+                    File.WriteAllText(doc.FilePath, fixedRoot.ToFullString(), encoding);
                 }
             }
         }
