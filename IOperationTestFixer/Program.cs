@@ -72,16 +72,19 @@ namespace IOperationTestFixer
                             sb = new StringBuilder();
                             currentState = ParseState.ParsingActual;
                         }
+                        else if (CheckForStacktrace())
+                        {
+                            Console.WriteLine($"Could not parse test result for {MethodName}");
+                            ResetParsing();
+                        }
                         break;
 
                     case ParseState.ParsingActual:
-                        if (line.Trim().StartsWith("Exception stacktrace"))
+                        if (CheckForStacktrace())
                         {
-                            currentState = ParseState.NotParsing;
                             var replaceText = sb.ToString().Replace("Actual:", "").Trim();
                             replaceDetails[MethodName] = replaceText;
-                            sb = null;
-                            lastLine = null;
+                            ResetParsing();
                         }
                         else
                         {
@@ -94,6 +97,14 @@ namespace IOperationTestFixer
                             lastLine = line;
                         }
                         break;
+
+                }
+                bool CheckForStacktrace() => line.Trim().StartsWith("Exception stacktrace");
+                void ResetParsing()
+                {
+                    currentState = ParseState.NotParsing;
+                    sb = null;
+                    lastLine = null;
                 }
             }
         }
