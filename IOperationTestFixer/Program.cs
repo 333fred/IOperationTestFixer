@@ -1,14 +1,17 @@
 ﻿// Copyright (c) Fredric Silberberg.  All Rights Reserved.  Licensed under the Apache License, Version 2.0.  See License.txt in the project root for license information.
 
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.MSBuild;
-using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.VisualBasic;
+using Microsoft.CodeAnalysis.VisualBasic.Syntax;
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace IOperationTestFixer
 {
@@ -19,17 +22,25 @@ namespace IOperationTestFixer
 
         static int Main(string[] args)
         {
-            if (args.Length != 2)
+            if (args.Length < 2)
             {
-                Console.WriteLine("Usage: IOperationTestFixer <Path to failure file> <path to compilers.sln>");
+                Console.WriteLine("Usage: IOperationTestFixer <Path to failure file> <paths to recursively search for cs or vb files to fix>");
                 Console.ReadKey();
                 return 1;
             }
 
             ParseFailures(args[0]);
-            DoReplace(args[1]).GetAwaiter().GetResult();
+            DoReplace(args.Skip(1));
             Console.WriteLine("Completed Test Fixes");
             return 0;
+        }
+
+        private enum ParseState
+        {
+            NotParsing,
+            FindingActual,
+            ParsingActual,
+            SkippingException
         }
 
         static void ParseFailures(string failureFilePath)
@@ -37,77 +48,110 @@ namespace IOperationTestFixer
             Console.WriteLine("Parsing test results");
             string MethodName = string.Empty;
 
-            int flag = 0;
-            StringBuilder sb = new StringBuilder();
-            var lines = System.IO.File.ReadLines(failureFilePath);
+            var currentState = ParseState.NotParsing;
+            string lastLine = null;
+            StringBuilder sb = null;
+            var lines = File.ReadLines(failureFilePath);
 
             foreach (string line in lines)
             {
-                if (line.EndsWith("FAILED:"))
+                switch (currentState)
                 {
-                    MethodName = line.Replace("'", "").Replace(" FAILED:", "").Trim();
-                }
-                if (line.StartsWith("Actual:") && !line.StartsWith("Actual:   True"))
-                {
-                    flag = 1;
-                    sb = new StringBuilder();
+                    case ParseState.NotParsing:
+                        if (line.EndsWith("FAILED:"))
+                        {
+                            MethodName = line.Replace("'", "").Replace(" FAILED:", "").Trim();
+                            currentState = ParseState.FindingActual;
+                        }
+                        break;
 
-                }
-                if (flag > 0)
-                {
-                    sb.AppendLine(line);
-                }
-                if (line == @"" && flag == 1)
-                {
-                    var replaceText = sb.ToString();
-                    replaceText = replaceText.Replace("Actual:", "");
-                    replaceText = replaceText.Trim();
-                    replaceDetails[MethodName] = replaceText;
-                    flag = 0;
-                    sb = new StringBuilder();
+                    case ParseState.FindingActual:
+                        if (line.StartsWith("Actual:") && !line.StartsWith("Actual:   True"))
+                        {
+                            Debug.Assert(sb == null);
+                            sb = new StringBuilder();
+                            currentState = ParseState.ParsingActual;
+                        }
+                        break;
+
+                    case ParseState.ParsingActual:
+                        if (line.Trim().StartsWith("Exception stacktrace"))
+                        {
+                            currentState = ParseState.NotParsing;
+                            var replaceText = sb.ToString().Replace("Actual:", "").Trim();
+                            replaceDetails[MethodName] = replaceText;
+                            sb = null;
+                            lastLine = null;
+                        }
+                        else
+                        {
+                            // Lag a line behind because we don't want to append the empty line before
+                            // the exception stacktrace to the output
+                            if (lastLine != null)
+                            {
+                                sb.AppendLine(lastLine);
+                            }
+                            lastLine = line;
+                        }
+                        break;
                 }
             }
         }
 
-        static async Task DoReplace(string solutionFile)
+        static void DoReplace(IEnumerable<string> folders)
         {
-            Console.WriteLine("Creating workspace");
-            var workspace = MSBuildWorkspace.Create();
-            Console.WriteLine($"Opening {solutionFile}");
-            var solution = await workspace.OpenSolutionAsync(solutionFile);
+            Console.WriteLine("Searching for files to fix");
+            var fileBuilder = ImmutableArray.CreateBuilder<string>();
+            foreach (var folder in folders)
+            {
+                fileBuilder.AddRange(Directory.EnumerateFiles(folder, "*.cs", SearchOption.AllDirectories));
+                fileBuilder.AddRange(Directory.EnumerateFiles(folder, "*.vb", SearchOption.AllDirectories));
+            }
 
-            Console.WriteLine("Scanning for test methods to fix");
-            var projects = solution.Projects.Where(p => p.HasDocuments).SelectMany(p => p.Documents);
-            var docs = solution.Projects.Where(p => p.HasDocuments)
-                                             .Where(p => p.Name.EndsWith("Test"))
-                                             .SelectMany(p => p.Documents)
-                                             .Where(d => d.Name.EndsWith(".cs") || d.Name.EndsWith(".vb"))
-                                             .Where(d => !d.Name.EndsWith("Designer.cs") || !d.Name.EndsWith("Designer.vb"))
-                                             .Where(d => d.SupportsSemanticModel);
+            var filePaths = fileBuilder.ToImmutable();
+            Console.WriteLine($"Found {filePaths.Length} files. Parsing into syntax trees.");
 
-            Console.WriteLine("Test files retrieved. Starting fix pass.");
-            foreach (var doc in docs)
+            var syntaxTreesBuilder = ImmutableArray.CreateBuilder<(SyntaxTree tree, string path)>();
+            foreach (var filePath in filePaths)
+            {
+                if (filePath.EndsWith("cs"))
+                {
+                    syntaxTreesBuilder.Add((tree: CSharpSyntaxTree.ParseText(File.ReadAllText(filePath)), path: filePath));
+                }
+                else
+                {
+                    syntaxTreesBuilder.Add((tree: VisualBasicSyntaxTree.ParseText(File.ReadAllText(filePath)), path: filePath));
+                }
+            }
+
+            Console.WriteLine("Parsed syntax trees. Fixing tests");
+
+            foreach (var (tree, path) in syntaxTreesBuilder.ToImmutable())
             {
                 if (replaceDetails.Count == 0) break;
-                var semanticModel = await doc.GetSemanticModelAsync();
-                SyntaxNode root = await doc.GetSyntaxRootAsync();
+                SyntaxNode root = tree.GetRoot();
                 SyntaxNode fixedRoot;
                 if (root.Language == LanguageNames.CSharp)
                 {
-                    var fixer = new CSharpFixer(semanticModel);
+                    var fixer = new CSharpFixer();
                     fixedRoot = fixer.Visit(root);
                 }
                 else
                 {
-                    var fixer = new VBFixer(semanticModel);
+                    var fixer = new VBFixer();
                     fixedRoot = fixer.Visit(root);
                 }
 
                 if (fixedRoot != root)
                 {
-                    Console.WriteLine($"Committing changes to {doc.FilePath}");
-                    var encoding = (await doc.GetTextAsync()).Encoding;
-                    File.WriteAllText(doc.FilePath, fixedRoot.ToFullString(), encoding);
+                    Console.WriteLine($"Committing changes to {path}");
+                    Encoding encoding;
+                    using (var reader = new StreamReader(path, detectEncodingFromByteOrderMarks: true))
+                    {
+                        reader.Peek();
+                        encoding = reader.CurrentEncoding;
+                    }
+                    File.WriteAllText(path, fixedRoot.ToFullString(), encoding);
                 }
             }
         }
@@ -115,80 +159,124 @@ namespace IOperationTestFixer
         private static string GetMethodName(IMethodSymbol symbol) =>
                 $"{symbol.ContainingType.ToDisplayString()}.{symbol.Name.ToString().Replace("(", "").Replace(")", "")}".Trim();
 
-        private class CSharpFixer : Microsoft.CodeAnalysis.CSharp.CSharpSyntaxRewriter
+        private class CSharpFixer : CSharpSyntaxRewriter
         {
-            private SemanticModel _semanticModel;
+            private string _methodName = null;
+            private string _namespace = null;
+            private string _class = null;
 
-            public CSharpFixer(SemanticModel semanticModel)
+            public CSharpFixer()
             {
-                _semanticModel = semanticModel;
+            }
+
+            public override SyntaxNode VisitNamespaceDeclaration(NamespaceDeclarationSyntax node)
+            {
+                _namespace = node.Name.ToFullString().Trim();
+                return base.VisitNamespaceDeclaration(node);
+            }
+
+            public override SyntaxNode VisitClassDeclaration(ClassDeclarationSyntax node)
+            {
+                _class = node.Identifier.Text;
+                return base.VisitClassDeclaration(node);
+            }
+
+            public override SyntaxNode VisitMethodDeclaration(MethodDeclarationSyntax node)
+            {
+                if (replaceDetails.Count == 0) return node;
+                var name = $"{_namespace}.{_class}.{node.Identifier.GetIdentifierText()}";
+                if (!replaceDetails.ContainsKey(name))
+                {
+                    return node;
+                }
+
+                _methodName = name;
+
+                return base.VisitMethodDeclaration(node);
             }
 
             public override SyntaxNode VisitLocalDeclarationStatement(Microsoft.CodeAnalysis.CSharp.Syntax.LocalDeclarationStatementSyntax node)
             {
-                if (replaceDetails.Count == 0) return node;
-                var enclosingSymbol = _semanticModel.GetEnclosingSymbol(node.SpanStart);
-                if (!(enclosingSymbol is IMethodSymbol methodSymbol))
+                if (_methodName == null) return node;
+                if (node.Declaration.Variables.Count > 1)
                 {
                     return node;
                 }
-                var methodName = GetMethodName(methodSymbol);
-                if (!replaceDetails.ContainsKey(methodName))
-                {
-                    return node;
-                }
-
-                if (node.Declaration.Variables.Count > 1 ||
-                    node.Declaration.Variables.Single().Identifier.ValueText != "expectedOperationTree")
+                var identifier = node.Declaration.Variables.Single().Identifier.ValueText;
+                if (identifier != "expectedOperationTree" &&
+                    identifier != "expectedFlowGraph")
                 {
                     return node;
                 }
 
-                Console.WriteLine($"Fixing {methodSymbol.Name}");
+                Console.WriteLine($"Fixing {_methodName}");
                 var oldInitializer = node.Declaration.Variables.Single().Initializer.Value;
                 var newInitializer = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.LiteralExpression(
                                                 Microsoft.CodeAnalysis.CSharp.SyntaxKind.StringLiteralExpression,
                                                 Microsoft.CodeAnalysis.CSharp.SyntaxFactory.Literal(
                                                     $@"@""
-{replaceDetails[methodName].Replace("\"", "\"\"")}
+{replaceDetails[_methodName].Replace("\"", "\"\"")}
 """,
                                                     Environment.NewLine));
 
-                replaceDetails.Remove(methodName);
+                replaceDetails.Remove(_methodName);
+                _methodName = null;
                 return node.ReplaceNode(oldInitializer, newInitializer);
             }
         }
 
-        private class VBFixer : Microsoft.CodeAnalysis.VisualBasic.VisualBasicSyntaxRewriter
+        private class VBFixer : VisualBasicSyntaxRewriter
         {
-            private SemanticModel _semanticModel;
-            public VBFixer(SemanticModel semanticModel)
+            private string _methodName;
+            private string _namespace;
+            private string _class;
+
+            public VBFixer()
             {
-                _semanticModel = semanticModel;
+            }
+
+            public override SyntaxNode VisitNamespaceBlock(NamespaceBlockSyntax node)
+            {
+                _namespace = node.NamespaceStatement.Name.ToFullString().Trim();
+                return base.VisitNamespaceBlock(node);
+            }
+
+            public override SyntaxNode VisitClassBlock(ClassBlockSyntax node)
+            {
+                _class = node.ClassStatement.Identifier.Text;
+                return base.VisitClassBlock(node);
+            }
+
+            public override SyntaxNode VisitMethodBlock(MethodBlockSyntax node)
+            {
+                if (replaceDetails.Count == 0) return node;
+                var name = $"{_namespace}.{_class}.{node.SubOrFunctionStatement.Identifier.GetIdentifierText()}";
+                if (!replaceDetails.ContainsKey(name))
+                {
+                    return node;
+                }
+
+                _methodName = name;
+                return base.VisitMethodBlock(node);
             }
 
             public override SyntaxNode VisitLocalDeclarationStatement(Microsoft.CodeAnalysis.VisualBasic.Syntax.LocalDeclarationStatementSyntax node)
             {
-                if (replaceDetails.Count == 0) return node;
-                var enclosingSymbol = _semanticModel.GetEnclosingSymbol(node.SpanStart);
-                if (!(enclosingSymbol is IMethodSymbol methodSymbol))
-                {
-                    return node;
-                }
-                var methodName = GetMethodName(methodSymbol);
-                if (!replaceDetails.ContainsKey(methodName))
-                {
-                    return node;
-                }
+                if (_methodName == null) return node;
 
                 if (node.Declarators.Count > 1 ||
-                    node.Declarators.First().Names.Count > 1 ||
-                    node.Declarators.First().Names.Single().Identifier.ValueText != "expectedOperationTree")
+                    node.Declarators.First().Names.Count > 1)
+                {
+                    return node;
+                }
+                var identifier = node.Declarators.First().Names.Single().Identifier.ValueText;
+                if (identifier != "expectedOperationTree" &&
+                    identifier != "expectedFlowGraph")
                 {
                     return node;
                 }
 
-                Console.WriteLine($"Fixing {methodSymbol.Name}");
+                Console.WriteLine($"Fixing {_methodName}");
                 var oldInitializer = (Microsoft.CodeAnalysis.VisualBasic.Syntax.XmlCDataSectionSyntax)
                     ((Microsoft.CodeAnalysis.VisualBasic.Syntax.MemberAccessExpressionSyntax)node.Declarators.Single().Initializer.Value).Expression;
                 var cdataOpen = oldInitializer.BeginCDataToken;
@@ -197,7 +285,7 @@ namespace IOperationTestFixer
                 {
                     Microsoft.CodeAnalysis.VisualBasic.SyntaxFactory.XmlTextLiteralToken(Environment.NewLine, "")
                 };
-                foreach (var line in replaceDetails[methodName].Split('\n'))
+                foreach (var line in replaceDetails[_methodName].Split('\n'))
                 {
                     var trimmedLine = line.Replace("\r", "") + Environment.NewLine;
                     xmlTokens.Add(Microsoft.CodeAnalysis.VisualBasic.SyntaxFactory.XmlTextLiteralToken(trimmedLine, Environment.NewLine));
@@ -207,7 +295,8 @@ namespace IOperationTestFixer
                     Microsoft.CodeAnalysis.VisualBasic.SyntaxFactory.TokenList(xmlTokens),
                     cdataClose);
 
-                replaceDetails.Remove(methodName);
+                replaceDetails.Remove(_methodName);
+                _methodName = null;
                 return node.ReplaceNode(oldInitializer, newInitializer);
             }
         }
