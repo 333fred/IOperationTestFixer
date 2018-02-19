@@ -19,6 +19,7 @@ namespace IOperationTestFixer
     {
         // Method Name -> New test contents
         private static Dictionary<string, string> replaceDetails = new Dictionary<string, string>();
+        private static ImmutableArray<String> s_validIdentifierNames = ImmutableArray.Create("expectedOperationTree", "expectedFlowGraph", "expectedGraph");
 
         static int Main(string[] args)
         {
@@ -214,8 +215,7 @@ namespace IOperationTestFixer
                     return node;
                 }
                 var identifier = node.Declaration.Variables.Single().Identifier.ValueText;
-                if (identifier != "expectedOperationTree" &&
-                    identifier != "expectedFlowGraph")
+                if (!s_validIdentifierNames.Contains(identifier))
                 {
                     return node;
                 }
@@ -281,8 +281,7 @@ namespace IOperationTestFixer
                     return node;
                 }
                 var identifier = node.Declarators.First().Names.Single().Identifier.ValueText;
-                if (identifier != "expectedOperationTree" &&
-                    identifier != "expectedFlowGraph")
+                if (s_validIdentifierNames.Contains(identifier))
                 {
                     return node;
                 }
