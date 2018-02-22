@@ -281,7 +281,7 @@ namespace IOperationTestFixer
                     return node;
                 }
                 var identifier = node.Declarators.First().Names.Single().Identifier.ValueText;
-                if (s_validIdentifierNames.Contains(identifier))
+                if (!s_validIdentifierNames.Contains(identifier))
                 {
                     return node;
                 }
